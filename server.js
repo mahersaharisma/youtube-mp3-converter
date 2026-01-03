@@ -1,5 +1,6 @@
 const express = require('express');
 const cors = require('cors');
+const ytdl = require('ytdl-core');
 const path = require('path');
 
 const app = express();
@@ -10,22 +11,10 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
 
-// Extract video ID dari URL
-function extractVideoId(url) {
-  const patterns = [
-    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
-    /^([a-zA-Z0-9_-]{11})$/
-  ];
-  
-  for (const pattern of patterns) {
-    const match = url.match(pattern);
-    if (match) return match[1];
-  }
-  return null;
-}
-
 // Endpoint untuk konversi
 app.post('/api/convert', async (req, res) => {
+  let downloadStream = null;
+  
   try {
     const { url } = req.body;
 
@@ -33,48 +22,77 @@ app.post('/api/convert', async (req, res) => {
       return res.status(400).json({ error: 'URL diperlukan' });
     }
 
-    const videoId = extractVideoId(url);
-    if (!videoId) {
+    // Validasi URL
+    if (!ytdl.validateURL(url)) {
       return res.status(400).json({ error: 'URL YouTube tidak valid' });
     }
 
-    console.log('Processing video ID:', videoId);
+    console.log('Processing:', url);
 
-    // Gunakan API converter gratis
-    const apiUrl = `https://www.yt-download.org/api/button/mp3/${videoId}`;
-    
-    const response = await fetch(apiUrl);
-    const html = await response.text();
-    
-    // Extract download link dari response
-    const downloadMatch = html.match(/href="([^"]+)"/);
-    
-    if (!downloadMatch) {
-      return res.status(500).json({ 
-        error: 'Tidak dapat mengkonversi video ini. Coba video lain.' 
-      });
-    }
+    // Get video info
+    const info = await ytdl.getInfo(url);
+    const title = info.videoDetails.title
+      .replace(/[^\w\s-]/gi, '')
+      .replace(/\s+/g, '-')
+      .substring(0, 50);
 
-    const downloadUrl = downloadMatch[1];
-    
-    // Return download URL ke frontend
-    res.json({ 
-      success: true,
-      downloadUrl: downloadUrl,
-      videoId: videoId
+    console.log('Title:', title);
+
+    // Set headers
+    res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
+    res.setHeader('Content-Type', 'audio/mpeg');
+
+    // Create download stream
+    downloadStream = ytdl(url, {
+      quality: 'highestaudio',
+      filter: 'audioonly',
+    });
+
+    // Handle stream errors
+    downloadStream.on('error', (err) => {
+      console.error('Stream error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ 
+          error: 'Gagal mengunduh audio dari video ini. Coba video lain.' 
+        });
+      }
+    });
+
+    // Pipe to response
+    downloadStream.pipe(res);
+
+    // Handle response finish
+    res.on('finish', () => {
+      console.log('Download completed');
     });
 
   } catch (error) {
-    console.error('Error:', error);
-    res.status(500).json({ 
-      error: 'Terjadi kesalahan. Silakan coba lagi.' 
-    });
+    console.error('Convert error:', error.message);
+    
+    // Cleanup stream if exists
+    if (downloadStream) {
+      downloadStream.destroy();
+    }
+    
+    let errorMsg = 'Terjadi kesalahan saat konversi.';
+    
+    if (error.message.includes('410')) {
+      errorMsg = 'Video tidak dapat diakses. Coba video lain.';
+    } else if (error.message.includes('private')) {
+      errorMsg = 'Video bersifat private atau restricted.';
+    } else if (error.message.includes('copyright')) {
+      errorMsg = 'Video memiliki copyright restriction.';
+    }
+    
+    if (!res.headersSent) {
+      res.status(500).json({ error: errorMsg });
+    }
   }
 });
 
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Server berjalan dengan baik' });
+  res.json({ status: 'OK' });
 });
 
 // Serve frontend
@@ -83,5 +101,5 @@ app.get('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Server berjalan di port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
