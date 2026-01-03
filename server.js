@@ -1,7 +1,8 @@
 const express = require('express');
 const cors = require('cors');
-const ytdl = require('@distube/ytdl-core');
+const youtubedl = require('youtube-dl-exec');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,11 +11,6 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
-
-// Cookies untuk bypass beberapa restriction
-const agent = ytdl.createAgent(undefined, {
-  localAddress: undefined
-});
 
 // Endpoint untuk konversi
 app.post('/api/convert', async (req, res) => {
@@ -25,61 +21,52 @@ app.post('/api/convert', async (req, res) => {
       return res.status(400).json({ error: 'URL diperlukan' });
     }
 
-    // Validasi URL YouTube
-    if (!ytdl.validateURL(url)) {
+    // Validasi URL YouTube dasar
+    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
       return res.status(400).json({ error: 'URL YouTube tidak valid' });
     }
 
     console.log('Processing URL:', url);
 
-    // Dapatkan info video dengan options yang lebih lengkap
-    const info = await ytdl.getInfo(url, {
-      agent: agent
-    });
-    
-    const title = info.videoDetails.title.replace(/[^\w\s-]/gi, '').substring(0, 100);
-    
-    console.log('Video title:', title);
-
-    // Set response headers untuk download
-    res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
+    // Set response headers
     res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
 
-    // Stream audio langsung ke response dengan error handling
-    const stream = ytdl(url, {
-      quality: 'highestaudio',
-      filter: 'audioonly',
-      agent: agent
+    // Download dan stream langsung
+    const ytdlProcess = spawn('yt-dlp', [
+      '-f', 'bestaudio',
+      '-x',
+      '--audio-format', 'mp3',
+      '--audio-quality', '0',
+      '-o', '-',
+      url
+    ]);
+
+    ytdlProcess.stdout.pipe(res);
+
+    ytdlProcess.stderr.on('data', (data) => {
+      console.error('yt-dlp stderr:', data.toString());
     });
 
-    stream.on('error', (err) => {
-      console.error('Stream error:', err);
+    ytdlProcess.on('error', (error) => {
+      console.error('Process error:', error);
       if (!res.headersSent) {
-        res.status(500).json({ 
-          error: 'Gagal mengunduh audio. Coba video lain atau coba lagi nanti.' 
-        });
+        res.status(500).json({ error: 'Gagal memproses video' });
       }
     });
 
-    stream.pipe(res);
+    ytdlProcess.on('close', (code) => {
+      if (code !== 0 && !res.headersSent) {
+        console.error('yt-dlp exited with code:', code);
+      }
+    });
 
   } catch (error) {
-    console.error('Error details:', error.message);
-    
-    let errorMessage = 'Terjadi kesalahan saat mengkonversi video.';
-    
-    if (error.message.includes('age')) {
-      errorMessage = 'Video memiliki batasan usia. Tidak bisa dikonversi.';
-    } else if (error.message.includes('private')) {
-      errorMessage = 'Video bersifat private atau tidak tersedia.';
-    } else if (error.message.includes('copyright')) {
-      errorMessage = 'Video memiliki batasan hak cipta.';
-    } else if (error.message.includes('available')) {
-      errorMessage = 'Video tidak tersedia di wilayah ini.';
-    }
-    
+    console.error('Error:', error);
     if (!res.headersSent) {
-      res.status(500).json({ error: errorMessage });
+      res.status(500).json({ 
+        error: 'Terjadi kesalahan saat mengkonversi video.' 
+      });
     }
   }
 });
