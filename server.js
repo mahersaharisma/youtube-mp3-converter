@@ -1,8 +1,6 @@
 const express = require('express');
 const cors = require('cors');
-const youtubedl = require('youtube-dl-exec');
 const path = require('path');
-const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -11,6 +9,20 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static('public'));
+
+// Extract video ID dari URL
+function extractVideoId(url) {
+  const patterns = [
+    /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)/,
+    /^([a-zA-Z0-9_-]{11})$/
+  ];
+  
+  for (const pattern of patterns) {
+    const match = url.match(pattern);
+    if (match) return match[1];
+  }
+  return null;
+}
 
 // Endpoint untuk konversi
 app.post('/api/convert', async (req, res) => {
@@ -21,53 +33,42 @@ app.post('/api/convert', async (req, res) => {
       return res.status(400).json({ error: 'URL diperlukan' });
     }
 
-    // Validasi URL YouTube dasar
-    if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+    const videoId = extractVideoId(url);
+    if (!videoId) {
       return res.status(400).json({ error: 'URL YouTube tidak valid' });
     }
 
-    console.log('Processing URL:', url);
+    console.log('Processing video ID:', videoId);
 
-    // Set response headers
-    res.setHeader('Content-Type', 'audio/mpeg');
-    res.setHeader('Content-Disposition', 'attachment; filename="audio.mp3"');
+    // Gunakan API converter gratis
+    const apiUrl = `https://www.yt-download.org/api/button/mp3/${videoId}`;
+    
+    const response = await fetch(apiUrl);
+    const html = await response.text();
+    
+    // Extract download link dari response
+    const downloadMatch = html.match(/href="([^"]+)"/);
+    
+    if (!downloadMatch) {
+      return res.status(500).json({ 
+        error: 'Tidak dapat mengkonversi video ini. Coba video lain.' 
+      });
+    }
 
-    // Download dan stream langsung
-    const ytdlProcess = spawn('yt-dlp', [
-      '-f', 'bestaudio',
-      '-x',
-      '--audio-format', 'mp3',
-      '--audio-quality', '0',
-      '-o', '-',
-      url
-    ]);
-
-    ytdlProcess.stdout.pipe(res);
-
-    ytdlProcess.stderr.on('data', (data) => {
-      console.error('yt-dlp stderr:', data.toString());
-    });
-
-    ytdlProcess.on('error', (error) => {
-      console.error('Process error:', error);
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Gagal memproses video' });
-      }
-    });
-
-    ytdlProcess.on('close', (code) => {
-      if (code !== 0 && !res.headersSent) {
-        console.error('yt-dlp exited with code:', code);
-      }
+    const downloadUrl = downloadMatch[1];
+    
+    // Return download URL ke frontend
+    res.json({ 
+      success: true,
+      downloadUrl: downloadUrl,
+      videoId: videoId
     });
 
   } catch (error) {
     console.error('Error:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ 
-        error: 'Terjadi kesalahan saat mengkonversi video.' 
-      });
-    }
+    res.status(500).json({ 
+      error: 'Terjadi kesalahan. Silakan coba lagi.' 
+    });
   }
 });
 
